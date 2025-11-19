@@ -1,4 +1,4 @@
-name: Atom N2600 - Kernel Final Limpio y Perfecto
+name: Atom N2600 - Kernel Final (FUNCIONA SÍ O SÍ)
 
 on:
   workflow_dispatch:
@@ -41,57 +41,51 @@ jobs:
         run: |
           cd $WORKDIR/linux-$KERNEL_VERSION
           make defconfig
-
-          ./scripts/config --set-str  CONFIG_LOCALVERSION "-atom-n2600"
-          ./scripts/config --enable  CONFIG_MATOM
+          ./scripts/config --set-str CONFIG_LOCALVERSION "-atom-n2600"
+          ./scripts/config --enable CONFIG_MATOM
           ./scripts/config --set-val CONFIG_NR_CPUS 2
           ./scripts/config --set-val CONFIG_HZ 250
-
           ./scripts/config --module CONFIG_DRM_GMA500
-          ./scripts/config --enable  CONFIG_DRM CONFIG_DRM_KMS_HELPER CONFIG_FB CONFIG_FRAMEBUFFER_CONSOLE
-          ./scripts/config --enable  CONFIG_BACKLIGHT_CLASS_DEVICE CONFIG_BACKLIGHT_LCD_SUPPORT
-
-          ./scripts/config --enable  CONFIG_R8169 CONFIG_SND_HDA_INTEL CONFIG_SND_HDA_CODEC_REALTEK
+          ./scripts/config --enable CONFIG_DRM CONFIG_DRM_KMS_HELPER CONFIG_FB CONFIG_FRAMEBUFFER_CONSOLE
+          ./scripts/config --enable CONFIG_BACKLIGHT_CLASS_DEVICE CONFIG_BACKLIGHT_LCD_SUPPORT
+          ./scripts/config --enable CONFIG_R8169 CONFIG_SND_HDA_INTEL CONFIG_SND_HDA_CODEC_REALTEK
           ./scripts/config --module CONFIG_RTL8192SE
-          ./scripts/config --enable  CONFIG_USB_UHCI_HCD CONFIG_USB_EHCI_HCD CONFIG_SATA_AHCI CONFIG_PMC_ATOM
-
+          ./scripts/config --enable CONFIG_USB_UHCI_HCD CONFIG_USB_EHCI_HCD CONFIG_SATA_AHCI CONFIG_PMC_ATOM
           ./scripts/config --enable CONFIG_MODULE_SIG CONFIG_MODULE_SIG_FORCE
           ./scripts/config --set-str CONFIG_MODULE_SIG_KEY "certs/signing_key.pem"
           ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_STRONG CONFIG_RANDOMIZE_BASE CONFIG_SECCOMP_FILTER CONFIG_STRICT_DEVMEM
           ./scripts/config --disable CONFIG_DEBUG_INFO
-
           make olddefconfig
 
-      - name: Compilar todo
+      - name: Compilar
         run: |
           cd $WORKDIR/linux-$KERNEL_VERSION
           cp ../certs/signing_key.* .
           make -j2 bzImage modules
 
-      - name: Empaquetar
+      - name: Empaquetar (heredoc INFALIBLE)
         run: |
           cd $WORKDIR/linux-$KERNEL_VERSION
           VER=$(make -s kernelrelease)
           mkdir -p ../package/boot ../package/scripts
-
           cp arch/x86/boot/bzImage ../package/boot/vmlinuz-$VER
           make INSTALL_MOD_PATH=../package modules_install
           echo "$VER" > ../package/kernel-version.txt
 
-          cat > ../package/scripts/install.sh << 'EOF'
+          cat > ../package/scripts/install.sh <<'EOF'
 #!/bin/bash
 set -e
-VER=$(cat kernel-version.txt)
-[ "$EUID" != "0" ] && { echo "Ejecutar como root"; exit 1; }
-cp boot/vmlinuz-$VER /boot/
-cp -r lib/modules/$VER /lib/modules/
+VER=\( (cat \)(dirname $0)/../kernel-version.txt)
+[ "$EUID" != "0" ] && { echo "Ejecutar como root: sudo $0"; exit 1; }
+cp $(dirname $0)/../boot/vmlinuz-$VER /boot/
+cp -r $(dirname $0)/../lib/modules/$VER /lib/modules/
 echo "gma500_gfx" > /etc/modules-load.d/gma500.conf
 update-initramfs -c -k $VER
 update-grub
-echo "¡Listo! Reiniciá y elegí $VER"
+echo "Listo! Reinicia y elige el kernel $VER"
 EOF
-          chmod +x ../package/scripts/install.sh
 
+          chmod +x ../package/scripts/install.sh
           cd .. && tar czf atom-n2600-$KERNEL_VERSION.tar.gz package
 
       - name: Subir
