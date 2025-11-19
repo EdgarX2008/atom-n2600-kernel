@@ -23,29 +23,37 @@ jobs:
       - name: Install dependencies
         run: sudo apt update && sudo apt install -y build-essential bc bison flex libncurses-dev libssl-dev libelf-dev dwarves openssl xz-utils cpio
 
-      - name: Download kernel
+      - name: Download and extract kernel
         run: |
           mkdir -p $WORKDIR && cd $WORKDIR
           wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${{ env.KERNEL_VERSION }}.tar.xz
           tar xf linux-${{ env.KERNEL_VERSION }}.tar.xz
 
-      - name: Generate signing key
+      - name: Generate ephemeral signing key
         run: |
           cd $WORKDIR
           mkdir -p certs
-          openssl req -new -x509 -newkey rsa:2048 -keyout certs/signing_key.pem -out certs/signing_key.x509 -nodes -days 1 -subj "/CN=Atom N2600 Build"
+          openssl req -new -x509 -newkey rsa:2048 \
+            -keyout certs/signing_key.pem \
+            -out certs/signing_key.x509 \
+            -nodes -days 1 \
+            -subj "/CN=Atom N2600 Secure Build"
 
-      - name: Configure kernel (exactamente como tenías tú)
+      - name: Configure kernel (TODOS tus drivers originales + hardening)
         run: |
           cd $WORKDIR/linux-${{ env.KERNEL_VERSION }}
           make defconfig
-          ./scripts/config --set-str CONFIG_LOCALVERSION "-atom-n2600-hardened"
+
+          ./scripts/config --set-str  CONFIG_LOCALVERSION "-atom-n2600-secure"
           ./scripts/config --enable  CONFIG_MATOM
           ./scripts/config --set-val CONFIG_NR_CPUS 2
           ./scripts/config --set-val CONFIG_HZ 250
           ./scripts/config --enable  CONFIG_PREEMPT_VOLUNTARY
           ./scripts/config --enable  CONFIG_INTEL_IDLE
+          ./scripts/config --enable  CONFIG_MICROCODE
           ./scripts/config --enable  CONFIG_MICROCODE_INTEL
+
+          # Drivers exactos que tenías vos
           ./scripts/config --enable  CONFIG_DRM_GMA500
           ./scripts/config --enable  CONFIG_R8169
           ./scripts/config --enable  CONFIG_RTL8192SE
@@ -57,9 +65,12 @@ jobs:
           ./scripts/config --enable  CONFIG_ATA_PIIX
           ./scripts/config --enable  CONFIG_X86_INTEL_LPSS
           ./scripts/config --enable  CONFIG_PMC_ATOM
+
+          # Criptografía y seguridad
           ./scripts/config --enable  CONFIG_DM_CRYPT
+          ./scripts/config --enable  CONFIG_MODULE_SIG
           ./scripts/config --enable  CONFIG_MODULE_SIG_FORCE
-          ./scripts/config --set-str  CONFIG_MODULE_SIG_KEY "../certs/signing_key.pem"
+          ./scripts/config --set-str  CONFIG_MODULE_SIG_KEY "certs/signing_key.pem"
           ./scripts/config --enable  CONFIG_STRICT_DEVMEM
           ./scripts/config --enable  CONFIG_IO_STRICT_DEVMEM
           ./scripts/config --enable  CONFIG_CC_STACKPROTECTOR_STRONG
@@ -67,65 +78,77 @@ jobs:
           ./scripts/config --enable  CONFIG_SECCOMP_FILTER
           ./scripts/config --enable  CONFIG_HARDENED_USERCOPY
           ./scripts/config --disable CONFIG_DEBUG_INFO
+
           make olddefconfig
 
-      - name: Build kernel
+      - name: Copy signing key + Build kernel
         run: |
           cd $WORKDIR/linux-${{ env.KERNEL_VERSION }}
+          cp ../certs/signing_key.pem ../certs/signing_key.x509 .
           make -j2 bzImage modules
 
-      - name: Package with install/uninstall + UFW + Encrypted DNS
+      - name: Create final package (install/uninstall + UFW + DNS cifrado)
         run: |
           cd $WORKDIR/linux-${{ env.KERNEL_VERSION }}
           VER=$(make kernelrelease)
-          mkdir -p ../package/boot ../package/scripts ../package/etc/ufw ../package/etc/systemd/resolved.conf.d
-          cp arch/x86/boot/bzImage ../package/boot/vmlinuz-$VER
-          make INSTALL_MOD_PATH=../package modules_install
-          echo "$VER" > ../package/kernel-version.txt
+          PKG=../package
+          mkdir -p $PKG/boot $PKG/scripts $PKG/etc/ufw $PKG/etc/systemd/resolved.conf.d
 
-          cat > ../package/scripts/install.sh << 'EOF'
+          cp arch/x86/boot/bzImage $PKG/boot/vmlinuz-$VER
+          make INSTALL_MOD_PATH=$PKG modules_install
+          echo "$VER" > $PKG/kernel-version.txt
+
+          cat > $PKG/scripts/install.sh << 'EOF'
 #!/bin/bash
-./scripts/config --set-str CONFIG_MODULE_SIG_KEY "certs/signing_key.pem"
-VER=$(cat kernel-version.txt)
-[ "$EUID" != "0" ] && echo "Run as root" && exit 1
+set -e
+VER=$(cat kernel-version.txt 2>/dev/null || echo "$1")
+[ "$EUID" != "0" ] && echo "Ejecutar como root: sudo $0" && exit 1
+
+echo "Instalando kernel seguro $VER + UFW + DNS cifrado..."
+
 cp boot/vmlinuz-$VER /boot/
 cp -r lib/modules/$VER /lib/modules/
 update-initramfs -c -k $VER
 update-grub
+
 ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow ssh
 ufw --force enable
+
 cat > /etc/systemd/resolved.conf.d/dns.conf << EOL
 [Resolve]
-DNS=1.1.1.1 1.0.0.1
+DNS=1.1.1.1 1.0.0.1 2606:4700:4700::1111 2606:4700:4700::1001
 DNSOverTLS=yes
 EOL
 systemctl restart systemd-resolved
-echo "Kernel $VER + UFW + DNS cifrado instalado. Reinicia."
+
+echo "¡Listo! Kernel $VER instalado con seguridad máxima."
+echo "Reiniciá y elegí el nuevo kernel en GRUB."
 EOF
 
-          cat > ../package/scripts/uninstall.sh << 'EOF'
+          cat > $PKG/scripts/uninstall.sh << 'EOF'
 #!/bin/bash
 set -e
-VER=$(cat kernel-version.txt)
-read -p "Eliminar kernel $VER y configuración de seguridad? (y/N): " ans
-[[ "$ans" != "y" && "$ans" != "Y" ]] && exit 0
+VER=$(cat kernel-version.txt 2>/dev/null || echo "$1")
+read -p "¿Eliminar kernel $VER y configuración de seguridad? (y/N): " ans
+[[ "$ans" != "y" && "$ans" != "Y" ]] && echo "Cancelado" && exit 0
+
 rm -f /boot/vmlinuz-$VER /boot/initrd.img-$VER
 rm -rf /lib/modules/$VER
 update-grub
 ufw --force reset
 rm -f /etc/systemd/resolved.conf.d/dns.conf
 systemctl restart systemd-resolved
-echo "Todo eliminado."
+echo "Todo eliminado correctamente."
 EOF
 
-          chmod +x ../package/scripts/*.sh
-          cd .. && tar czf atom-n2600-ULTIMATE-${{ env.KERNEL_VERSION }}.tar.gz package
+          chmod +x $PKG/scripts/*.sh
+          cd .. && tar czf atom-n2600-FINAL-${{ env.KERNEL_VERSION }}.tar.gz package
 
-      - name: Upload
+      - name: Upload kernel package
         uses: actions/upload-artifact@v4
         with:
-          name: atom-n2600-ULTIMATE-${{ env.KERNEL_VERSION }}
-          path: ${{ env.WORKDIR }}/atom-n2600-ULTIMATE-${{ env.KERNEL_VERSION }}.tar.gz
+          name: atom-n2600-FINAL-${{ env.KERNEL_VERSION }}
+          path: ${{ env.WORKDIR }}/atom-n2600-FINAL-${{ env.KERNEL_VERSION }}.tar.gz
