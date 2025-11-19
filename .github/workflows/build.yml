@@ -86,7 +86,6 @@ jobs:
           cat > $PKG/scripts/install.sh << EOF
 #!/bin/bash
 set -e
-
 VER=\$(cat kernel-version.txt 2>/dev/null || echo "\$1")
 [ "\$EUID" != "0" ] && echo "Ejecutar como root: sudo \$0" && exit 1
 
