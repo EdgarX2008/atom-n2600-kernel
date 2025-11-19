@@ -9,7 +9,6 @@ on:
         default: '6.1.113'
 
 env:
-  KERNEL_VERSION: ${{ inputs.kernel_version }}
   WORKDIR: ${{ github.workspace }}/kernel-build
 
 jobs:
@@ -23,94 +22,80 @@ jobs:
       - name: Instalar dependencias
         run: sudo apt update && sudo apt install -y build-essential bc bison flex libncurses-dev libssl-dev libelf-dev dwarves openssl xz-utils cpio wget
 
-      - name: Descargar kernel
+      - name: Variables
+        run: echo "KERNEL_VERSION=${{ inputs.kernel_version }}" >> $GITHUB_ENV
+
+      - name: Descargar y extraer
         run: |
           mkdir -p $WORKDIR && cd $WORKDIR
-          wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${{ env.KERNEL_VERSION }}.tar.xz
-          tar xf linux-${{ env.KERNEL_VERSION }}.tar.xz
+          wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL_VERSION.tar.xz
+          tar xf linux-$KERNEL_VERSION.tar.xz
 
-      - name: Generar clave de firma efímera
+      - name: Clave de firma
         run: |
           cd $WORKDIR
           mkdir -p certs
           openssl req -new -x509 -newkey rsa:2048 -keyout certs/signing_key.pem -out certs/signing_key.x509 -nodes -days 1 -subj "/CN=Atom N2600"
 
-      - name: Configurar kernel (GMA500 como módulo + todo lo tuyo)
+      - name: Configurar kernel
         run: |
-          cd \( WORKDIR/linux- \){{ env.KERNEL_VERSION }}
+          cd $WORKDIR/linux-$KERNEL_VERSION
           make defconfig
 
-          ./scripts/config --set-str  CONFIG_LOCALVERSION "-atom-n2600-final"
+          ./scripts/config --set-str  CONFIG_LOCALVERSION "-atom-n2600"
           ./scripts/config --enable  CONFIG_MATOM
           ./scripts/config --set-val CONFIG_NR_CPUS 2
           ./scripts/config --set-val CONFIG_HZ 250
 
-          # Drivers que usás
-          ./scripts/config --module CONFIG_DRM_GMA500          # ← LA CLAVE
-          ./scripts/config --enable  CONFIG_R8169
-          ./scripts/config --enable  CONFIG_RTL8192SE
-          ./scripts/config --enable  CONFIG_SND_HDA_INTEL
-          ./scripts/config --enable  CONFIG_SND_HDA_CODEC_REALTEK
-          ./scripts/config --enable  CONFIG_USB_UHCI_HCD
-          ./scripts/config --enable  CONFIG_USB_EHCI_HCD
-          ./scripts/config --enable  CONFIG_SATA_AHCI
-          ./scripts/config --enable  CONFIG_PMC_ATOM
+          ./scripts/config --module CONFIG_DRM_GMA500
+          ./scripts/config --enable  CONFIG_DRM CONFIG_DRM_KMS_HELPER CONFIG_FB CONFIG_FRAMEBUFFER_CONSOLE
+          ./scripts/config --enable  CONFIG_BACKLIGHT_CLASS_DEVICE CONFIG_BACKLIGHT_LCD_SUPPORT
 
-          # Hardening
-          ./scripts/config --enable  CONFIG_MODULE_SIG
-          ./scripts/config --enable  CONFIG_MODULE_SIG_FORCE
+          ./scripts/config --enable  CONFIG_R8169 CONFIG_SND_HDA_INTEL CONFIG_SND_HDA_CODEC_REALTEK
+          ./scripts/config --module CONFIG_RTL8192SE
+          ./scripts/config --enable  CONFIG_USB_UHCI_HCD CONFIG_USB_EHCI_HCD CONFIG_SATA_AHCI CONFIG_PMC_ATOM
+
+          ./scripts/config --enable CONFIG_MODULE_SIG CONFIG_MODULE_SIG_FORCE
           ./scripts/config --set-str CONFIG_MODULE_SIG_KEY "certs/signing_key.pem"
-          ./scripts/config --enable  CONFIG_CC_STACKPROTECTOR_STRONG
-          ./scripts/config --enable  CONFIG_RANDOMIZE_BASE
-          ./scripts/config --enable  CONFIG_SECCOMP_FILTER
-          ./scripts/config --enable  CONFIG_STRICT_DEVMEM
+          ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_STRONG CONFIG_RANDOMIZE_BASE CONFIG_SECCOMP_FILTER CONFIG_STRICT_DEVMEM
           ./scripts/config --disable CONFIG_DEBUG_INFO
-
-          # Helpers gráficos imprescindibles
-          ./scripts/config --enable CONFIG_DRM
-          ./scripts/config --enable CONFIG_DRM_KMS_HELPER
-          ./scripts/config --enable CONFIG_FB
-          ./scripts/config --enable CONFIG_FRAMEBUFFER_CONSOLE
 
           make olddefconfig
 
-      - name: Compilar
+      - name: Compilar todo
         run: |
-          cd \( WORKDIR/linux- \){{ env.KERNEL_VERSION }}
-          cp ../certs/signing_key.pem ../certs/signing_key.x509 .
+          cd $WORKDIR/linux-$KERNEL_VERSION
+          cp ../certs/signing_key.* .
           make -j2 bzImage modules
 
-      - name: Empaquetar (instalación ultra-simple)
+      - name: Empaquetar
         run: |
-          cd \( WORKDIR/linux- \){{ env.KERNEL_VERSION }}
+          cd $WORKDIR/linux-$KERNEL_VERSION
           VER=$(make -s kernelrelease)
-          mkdir -p ../package/boot ../package/scripts ../package/lib/modules
+          mkdir -p ../package/boot ../package/scripts
 
           cp arch/x86/boot/bzImage ../package/boot/vmlinuz-$VER
           make INSTALL_MOD_PATH=../package modules_install
           echo "$VER" > ../package/kernel-version.txt
 
-          # install.sh mínimo y que NUNCA falla
           cat > ../package/scripts/install.sh << 'EOF'
 #!/bin/bash
 set -e
 VER=$(cat kernel-version.txt)
-[ "$EUID" != "0" ] && { echo "Ejecutar como root: sudo $0"; exit 1; }
-
-echo "Instalando kernel limpio $VER..."
+[ "$EUID" != "0" ] && { echo "Ejecutar como root"; exit 1; }
 cp boot/vmlinuz-$VER /boot/
 cp -r lib/modules/$VER /lib/modules/
 echo "gma500_gfx" > /etc/modules-load.d/gma500.conf
 update-initramfs -c -k $VER
 update-grub
-echo "¡Listo! Reinicia y elegí el kernel $VER en GRUB."
+echo "¡Listo! Reiniciá y elegí $VER"
 EOF
+          chmod +x ../package/scripts/install.sh
 
-          chmod +x ../package/scripts/*.sh
-          cd .. && tar czf atom-n2600-final-${{ env.KERNEL_VERSION }}.tar.gz package
+          cd .. && tar czf atom-n2600-$KERNEL_VERSION.tar.gz package
 
-      - name: Subir paquete
+      - name: Subir
         uses: actions/upload-artifact@v4
         with:
-          name: atom-n2600-final-${{ env.KERNEL_VERSION }}
-          path: \( {{ env.WORKDIR }}/atom-n2600-final- \){{ env.KERNEL_VERSION }}.tar.gz
+          name: atom-n2600-$KERNEL_VERSION
+          path: ${{ env.WORKDIR }}/atom-n2600-*.tar.gz
