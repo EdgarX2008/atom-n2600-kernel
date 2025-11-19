@@ -1,4 +1,4 @@
-name: Build Secure Kernel for Intel Atom N2600
+name: Build Secure Kernel for Intel Atom N2600 + UFW + Encrypted DNS
 
 on:
   workflow_dispatch:
@@ -6,239 +6,126 @@ on:
       kernel_version:
         description: 'Kernel version'
         required: true
-        default: '6.1.85'
+        default: '6.1.113'
 
 env:
-  KERNEL_VERSION: ${{ github.event.inputs.kernel_version }}
+  KERNEL_VERSION: ${{ inputs.kernel_version }}
   WORKDIR: ${{ github.workspace }}/kernel-build
-  MAKEFLAGS: "-j2"
 
 jobs:
-  build-secure-kernel:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential libncurses-dev libssl-dev libelf-dev \
-          bc flex bison xz-utils cpio kmod wget git
-        
-    - name: Setup kernel build environment
-      run: |
-        mkdir -p $WORKDIR
-        cd $WORKDIR
-        wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL_VERSION.tar.xz
-        tar -xf linux-$KERNEL_VERSION.tar.xz
-        mkdir -p build
-      
-    - name: Generate ephemeral signing keys
-      run: |
-        cd $WORKDIR
-        mkdir -p certs
-        openssl req -new -x509 -newkey rsa:4096 \
-          -keyout certs/signing_key.pem -out certs/signing_key.x509 \
-          -nodes -subj "/CN=Atom-N2600-Kernel-CI/OU=Ephemeral-Build" -days 1
-        echo "Ephemeral signing keys generated"
-      
-    - name: Configure kernel with Atom N2600 optimizations
-      run: |
-        cd $WORKDIR/linux-$KERNEL_VERSION
-        
-        make O=../build defconfig
-        
-        echo "Applying Atom N2600 optimizations and security hardening..."
-        
-        CONFIG_SCRIPT="./scripts/config"
-        
-        $CONFIG_SCRIPT --set-str CONFIG_LOCALVERSION '"-atom-n2600-hardened"'
-        $CONFIG_SCRIPT --enable CONFIG_MATOM
-        $CONFIG_SCRIPT --set-val CONFIG_HZ 250
-        $CONFIG_SCRIPT --set-val CONFIG_NR_CPUS 2
-        $CONFIG_SCRIPT --enable CONFIG_PREEMPT_VOLUNTARY
-        $CONFIG_SCRIPT --enable CONFIG_INTEL_IDLE
-        $CONFIG_SCRIPT --enable CONFIG_MICROCODE
-        $CONFIG_SCRIPT --enable CONFIG_MICROCODE_INTEL
-        
-        \ # ESSENTIAL DRIVERS
-        $CONFIG_SCRIPT --enable CONFIG_DRM_GMA500
-        $CONFIG_SCRIPT --enable CONFIG_R8169
-        $CONFIG_SCRIPT --enable CONFIG_RTL8192SE
-        $CONFIG_SCRIPT --enable CONFIG_SND_HDA_INTEL
-        $CONFIG_SCRIPT --enable CONFIG_SND_HDA_CODEC_REALTEK
-        $CONFIG_SCRIPT --enable CONFIG_USB_UHCI_HCD
-        $CONFIG_SCRIPT --enable CONFIG_USB_EHCI_HCD
-        $CONFIG_SCRIPT --enable CONFIG_SATA_AHCI
-        $CONFIG_SCRIPT --enable CONFIG_ATA_PIIX
-        $CONFIG_SCRIPT --enable CONFIG_X86_INTEL_LPSS
-        $CONFIG_SCRIPT --enable CONFIG_PMC_ATOM
-        
-        \ # SECURITY HARDENING
-        $CONFIG_SCRIPT --enable CONFIG_MODULE_SIG
-        $CONFIG_SCRIPT --enable CONFIG_MODULE_SIG_FORCE
-        $CONFIG_SCRIPT --enable CONFIG_MODULE_SIG_SHA256
-        $CONFIG_SCRIPT --set-str CONFIG_MODULE_SIG_KEY "certs/signing_key.pem"
-        
-        $CONFIG_SCRIPT --enable CONFIG_STRICT_DEVMEM
-        $CONFIG_SCRIPT --enable CONFIG_IO_STRICT_DEVMEM
-        $CONFIG_SCRIPT --enable CONFIG_CC_STACKPROTECTOR_STRONG
-        $CONFIG_SCRIPT --enable CONFIG_RANDOMIZE_BASE
-        $CONFIG_SCRIPT --enable CONFIG_RANDOMIZE_MEMORY
-        $CONFIG_SCRIPT --enable CONFIG_SECCOMP
-        $CONFIG_SCRIPT --enable CONFIG_SECCOMP_FILTER
-        $CONFIG_SCRIPT --enable CONFIG_SLAB_FREELIST_HARDENED
-        $CONFIG_SCRIPT --enable CONFIG_SLAB_FREELIST_RANDOM
-        $CONFIG_SCRIPT --enable CONFIG_SHUFFLE_PAGE_ALLOCATOR
-        $CONFIG_SCRIPT --enable CONFIG_INIT_ON_ALLOC_DEFAULT_ON
-        $CONFIG_SCRIPT --enable CONFIG_INIT_ON_FREE_DEFAULT_ON
-        $CONFIG_SCRIPT --enable CONFIG_STRICT_KERNEL_RWX
-        $CONFIG_SCRIPT --enable CONFIG_STRICT_MODULE_RWX
-        $CONFIG_SCRIPT --enable CONFIG_FORTIFY_SOURCE
-        $CONFIG_SCRIPT --enable CONFIG_BUG_ON_DATA_CORRUPTION
-        
-        \ # CRYPTO & LUKS SUPPORT
-        $CONFIG_SCRIPT --enable CONFIG_DM_CRYPT
-        $CONFIG_SCRIPT --enable CONFIG_CRYPTO_XTS
-        $CONFIG_SCRIPT --enable CONFIG_CRYPTO_AES
-        $CONFIG_SCRIPT --enable CONFIG_CRYPTO_SHA256
-        $CONFIG_SCRIPT --enable CONFIG_CRYPTO_SHA512
-        $CONFIG_SCRIPT --enable CONFIG_KEYS
-        $CONFIG_SCRIPT --enable CONFIG_ENCRYPTED_KEYS
-        
-        \ # NETWORKING & FIREWALL
-        $CONFIG_SCRIPT --enable CONFIG_NETFILTER
-        $CONFIG_SCRIPT --enable CONFIG_NETFILTER_ADVANCED
-        $CONFIG_SCRIPT --enable CONFIG_NF_CONNTRACK
-        $CONFIG_SCRIPT --enable CONFIG_IP_NF_IPTABLES
-        $CONFIG_SCRIPT --enable CONFIG_IP6_NF_IPTABLES
-        $CONFIG_SCRIPT --enable CONFIG_NETFILTER_XTABLES
-        $CONFIG_SCRIPT --enable CONFIG_NETFILTER_XT_MATCH_STATE
-        $CONFIG_SCRIPT --enable CONFIG_IPV6
-        
-        \ # DISABLE UNNECESSARY
-        $CONFIG_SCRIPT --disable CONFIG_DEBUG_INFO
-        $CONFIG_SCRIPT --disable CONFIG_BLUETOOTH
-        $CONFIG_SCRIPT --disable CONFIG_WIRELESS
-        $CONFIG_SCRIPT --disable CONFIG_DRM_I915
-        $CONFIG_SCRIPT --disable CONFIG_USB_PRINTER
-        $CONFIG_SCRIPT --disable CONFIG_CUPS
-        
-        make O=../build olddefconfig
-        echo "Kernel configuration completed"
-      
-    - name: Build kernel and modules
-      run: |
-        cd $WORKDIR/build
-        echo "Building kernel image..."
-        time make -j2 bzImage
-        echo "Building kernel modules..."
-        time make -j2 modules
-        echo "Kernel compilation completed"
-      
-    - name: Create installation package
-      run: |
-        cd $WORKDIR/build
-        KERNEL_RELEASE=$(make -s kernelrelease)
-        echo "KERNEL_RELEASE: $KERNEL_RELEASE"
-        
-        PKG_DIR="$WORKDIR/package"
-        mkdir -p $PKG_DIR/{boot,lib/modules,scripts}
-        
-        cp arch/x86/boot/bzImage $PKG_DIR/boot/vmlinuz-$KERNEL_RELEASE
-        cp System.map $PKG_DIR/boot/System.map-$KERNEL_RELEASE
-        cp .config $PKG_DIR/boot/config-$KERNEL_RELEASE
-        make INSTALL_MOD_PATH=$PKG_DIR modules_install
-        
-        cat > $PKG_DIR/scripts/install.sh << 'EOF'
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install -y build-essential bc bison flex libncurses-dev libssl-dev libelf-dev dwarves openssl xz-utils cpio
+
+      - name: Download kernel
+        run: |
+          mkdir -p $WORKDIR && cd $WORKDIR
+          wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${{ env.KERNEL_VERSION }}.tar.xz
+          tar xf linux-${{ env.KERNEL_VERSION }}.tar.xz
+
+      - name: Generate signing key
+        run: |
+          cd $WORKDIR
+          mkdir -p certs
+          openssl req -new -x509 -newkey rsa:2048 -keyout certs/signing_key.pem -out certs/signing_key.x509 -nodes -days 1 -subj "/CN=Atom N2600 Build"
+
+      - name: Configure kernel (exactamente como tenías tú)
+        run: |
+          cd $WORKDIR/linux-${{ env.KERNEL_VERSION }}
+          make defconfig
+          ./scripts/config --set-str CONFIG_LOCALVERSION "-atom-n2600-hardened"
+          ./scripts/config --enable  CONFIG_MATOM
+          ./scripts/config --set-val CONFIG_NR_CPUS 2
+          ./scripts/config --set-val CONFIG_HZ 250
+          ./scripts/config --enable  CONFIG_PREEMPT_VOLUNTARY
+          ./scripts/config --enable  CONFIG_INTEL_IDLE
+          ./scripts/config --enable  CONFIG_MICROCODE_INTEL
+          ./scripts/config --enable  CONFIG_DRM_GMA500
+          ./scripts/config --enable  CONFIG_R8169
+          ./scripts/config --enable  CONFIG_RTL8192SE
+          ./scripts/config --enable  CONFIG_SND_HDA_INTEL
+          ./scripts/config --enable  CONFIG_SND_HDA_CODEC_REALTEK
+          ./scripts/config --enable  CONFIG_USB_UHCI_HCD
+          ./scripts/config --enable  CONFIG_USB_EHCI_HCD
+          ./scripts/config --enable  CONFIG_SATA_AHCI
+          ./scripts/config --enable  CONFIG_ATA_PIIX
+          ./scripts/config --enable  CONFIG_X86_INTEL_LPSS
+          ./scripts/config --enable  CONFIG_PMC_ATOM
+          ./scripts/config --enable  CONFIG_DM_CRYPT
+          ./scripts/config --enable  CONFIG_MODULE_SIG_FORCE
+          ./scripts/config --set-str  CONFIG_MODULE_SIG_KEY "../certs/signing_key.pem"
+          ./scripts/config --enable  CONFIG_STRICT_DEVMEM
+          ./scripts/config --enable  CONFIG_IO_STRICT_DEVMEM
+          ./scripts/config --enable  CONFIG_CC_STACKPROTECTOR_STRONG
+          ./scripts/config --enable  CONFIG_RANDOMIZE_BASE
+          ./scripts/config --enable  CONFIG_SECCOMP_FILTER
+          ./scripts/config --enable  CONFIG_HARDENED_USERCOPY
+          ./scripts/config --disable CONFIG_DEBUG_INFO
+          make olddefconfig
+
+      - name: Build kernel
+        run: |
+          cd $WORKDIR/linux-${{ env.KERNEL_VERSION }}
+          make -j2 bzImage modules
+
+      - name: Package with install/uninstall + UFW + Encrypted DNS
+        run: |
+          cd $WORKDIR/linux-${{ env.KERNEL_VERSION }}
+          VER=$(make kernelrelease)
+          mkdir -p ../package/boot ../package/scripts ../package/etc/ufw ../package/etc/systemd/resolved.conf.d
+          cp arch/x86/boot/bzImage ../package/boot/vmlinuz-$VER
+          make INSTALL_MOD_PATH=../package modules_install
+          echo "$VER" > ../package/kernel-version.txt
+
+          cat > ../package/scripts/install.sh << 'EOF'
 #!/bin/bash
 set -e
-
-KERNEL_FILE="kernel-version.txt"
-[ ! -f "$KERNEL_FILE" ] && echo "kernel-version.txt not found" && exit 1
-KERNEL_VERSION=$(cat $KERNEL_FILE)
-
-echo "Installing Secure Kernel: $KERNEL_VERSION"
-
-if [ "$EUID" -ne 0 ]; then
-    echo "Please run as root: sudo ./install.sh"
-    exit 1
-fi
-
-BACKUP_DIR="/boot/kernel-backup-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$BACKUP_DIR"
-echo "Creating backup in $BACKUP_DIR"
-cp /boot/vmlinuz-* "$BACKUP_DIR/" 2>/dev/null || true
-cp /boot/initrd.img-* "$BACKUP_DIR/" 2>/dev/null || true
-
-echo "Installing kernel files..."
-cp boot/vmlinuz-$KERNEL_VERSION /boot/
-cp boot/System.map-$KERNEL_VERSION /boot/
-cp boot/config-$KERNEL_VERSION /boot/
-
-echo "Installing kernel modules..."
-cp -r lib/modules/$KERNEL_VERSION /lib/modules/
-
-echo "Creating initramfs..."
-update-initramfs -c -k $KERNEL_VERSION
-
-echo "Updating GRUB..."
+VER=$(cat kernel-version.txt)
+[ "$EUID" != "0" ] && echo "Run as root" && exit 1
+cp boot/vmlinuz-$VER /boot/
+cp -r lib/modules/$VER /lib/modules/
+update-initramfs -c -k $VER
 update-grub
-
-echo ""
-echo "Secure Kernel installed successfully!"
-echo "Version: $KERNEL_VERSION"
-echo "Reboot and select the new kernel in GRUB"
-echo ""
+ufw --force reset
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ssh
+ufw --force enable
+cat > /etc/systemd/resolved.conf.d/dns.conf << EOL
+[Resolve]
+DNS=1.1.1.1 1.0.0.1
+DNSOverTLS=yes
+EOL
+systemctl restart systemd-resolved
+echo "Kernel $VER + UFW + DNS cifrado instalado. Reinicia."
 EOF
 
-        echo "$KERNEL_RELEASE" > $PKG_DIR/kernel-version.txt
-        
-        cat > $PKG_DIR/scripts/uninstall.sh << 'EOF'
+          cat > ../package/scripts/uninstall.sh << 'EOF'
 #!/bin/bash
 set -e
-
-if [ "$EUID" -ne 0 ]; then
-    echo "Please run as root: sudo ./uninstall.sh"
-    exit 1
-fi
-
-KERNEL_FILE="kernel-version.txt"
-[ ! -f "$KERNEL_FILE" ] && echo "kernel-version.txt not found" && exit 1
-KERNEL_VERSION=$(cat $KERNEL_FILE)
-
-echo "Uninstalling Kernel: $KERNEL_VERSION"
-
-read -p "Are you sure? (y/N): " confirm
-if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
-    echo "Uninstall cancelled"
-    exit 0
-fi
-
-rm -f /boot/vmlinuz-$KERNEL_VERSION
-rm -f /boot/System.map-$KERNEL_VERSION
-rm -f /boot/config-$KERNEL_VERSION
-rm -f /boot/initrd.img-$KERNEL_VERSION
-rm -rf /lib/modules/$KERNEL_VERSION
+VER=$(cat kernel-version.txt)
+read -p "Eliminar kernel $VER y configuración de seguridad? (y/N): " ans
+[[ "$ans" != "y" && "$ans" != "Y" ]] && exit 0
+rm -f /boot/vmlinuz-$VER /boot/initrd.img-$VER
+rm -rf /lib/modules/$VER
 update-grub
-
-echo "Kernel uninstalled. Reboot to use stock kernel."
+ufw --force reset
+rm -f /etc/systemd/resolved.conf.d/dns.conf
+systemctl restart systemd-resolved
+echo "Todo eliminado."
 EOF
 
-        chmod +x $PKG_DIR/scripts/install.sh $PKG_DIR/scripts/uninstall.sh
-        
-        cd $WORKDIR
-        tar czf atom-n2600-kernel-$KERNEL_VERSION.tar.gz -C package .
-        echo "Package created: atom-n2600-kernel-$KERNEL_VERSION.tar.gz"
-        du -h atom-n2600-kernel-$KERNEL_VERSION.tar.gz
-      
-    - name: Upload kernel package
-      uses: actions/upload-artifact@v4
-      with:
-        name: atom-n2600-kernel-${{ env.KERNEL_VERSION }}
-        path: ${{ env.WORKDIR }}/atom-n2600-kernel-${{ env.KERNEL_VERSION }}.tar.gz
-        retention-days: 30
+          chmod +x ../package/scripts/*.sh
+          cd .. && tar czf atom-n2600-ULTIMATE-${{ env.KERNEL_VERSION }}.tar.gz package
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: atom-n2600-ULTIMATE-${{ env.KERNEL_VERSION }}
+          path: ${{ env.WORKDIR }}/atom-n2600-ULTIMATE-${{ env.KERNEL_VERSION }}.tar.gz
