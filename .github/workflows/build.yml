@@ -85,7 +85,7 @@ jobs:
 
           cat > ../package/scripts/install.sh << 'EOF'
 #!/bin/bash
-set -e
+./scripts/config --set-str CONFIG_MODULE_SIG_KEY "certs/signing_key.pem"
 VER=$(cat kernel-version.txt)
 [ "$EUID" != "0" ] && echo "Run as root" && exit 1
 cp boot/vmlinuz-$VER /boot/
