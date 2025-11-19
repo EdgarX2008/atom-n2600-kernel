@@ -1,4 +1,4 @@
-name: Atom N2600 - Kernel Final (FUNCIONA SÍ O SÍ)
+name: Atom N2600 - Kernel Final DEFINITIVO
 
 on:
   workflow_dispatch:
@@ -63,7 +63,7 @@ jobs:
           cp ../certs/signing_key.* .
           make -j2 bzImage modules
 
-      - name: Empaquetar (heredoc INFALIBLE)
+      - name: Empaquetar (100% infalible)
         run: |
           cd $WORKDIR/linux-$KERNEL_VERSION
           VER=$(make -s kernelrelease)
@@ -75,14 +75,14 @@ jobs:
           cat > ../package/scripts/install.sh <<'EOF'
 #!/bin/bash
 set -e
-VER=\( (cat \)(dirname $0)/../kernel-version.txt)
+VER=\( (cat " \)(dirname "$0")/../kernel-version.txt")
 [ "$EUID" != "0" ] && { echo "Ejecutar como root: sudo $0"; exit 1; }
-cp $(dirname $0)/../boot/vmlinuz-$VER /boot/
-cp -r $(dirname $0)/../lib/modules/$VER /lib/modules/
-echo "gma500_gfx" > /etc/modules-load.d/gma500.conf
-update-initramfs -c -k $VER
-update-grub
-echo "Listo! Reinicia y elige el kernel $VER"
+cp "$(dirname "$0")/../boot/vmlinuz-$VER" /boot/
+cp -r "$(dirname "$0")/../lib/modules/$VER" /lib/modules/
+echo "gma500_gfx" | sudo tee /etc/modules-load.d/gma500.conf > /dev/null
+sudo update-initramfs -c -k "$VER"
+sudo update-grub
+echo "¡Listo! Reinicia y elige el kernel $VER"
 EOF
 
           chmod +x ../package/scripts/install.sh
