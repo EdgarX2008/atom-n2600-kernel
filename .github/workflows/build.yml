@@ -125,7 +125,7 @@ set -e
 
 VER=$(cat /tmp/kernel-package/kernel-version.txt)
 [ "$EUID" -ne 0 ] && { 
-  echo "Ejecutar como root: sudo $0" 
+  echo "Ejecutar como root:sudo $0" 
   exit 1
 }
 
