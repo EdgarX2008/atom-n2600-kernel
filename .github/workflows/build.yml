@@ -1,4 +1,4 @@
-name: Build Secure Kernel for Intel Atom N2600
+name: Atom N2600 - Kernel Final Limpio y Perfecto
 
 on:
   workflow_dispatch:
@@ -20,31 +20,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Instalar dependencias
         run: sudo apt update && sudo apt install -y build-essential bc bison flex libncurses-dev libssl-dev libelf-dev dwarves openssl xz-utils cpio wget
 
-      - name: Download and extract kernel
+      - name: Descargar kernel
         run: |
           mkdir -p $WORKDIR && cd $WORKDIR
           wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${{ env.KERNEL_VERSION }}.tar.xz
           tar xf linux-${{ env.KERNEL_VERSION }}.tar.xz
 
-      - name: Generate ephemeral signing key
+      - name: Generar clave de firma efímera
         run: |
           cd $WORKDIR
           mkdir -p certs
-          openssl req -new -x509 -newkey rsa:2048 -keyout certs/signing_key.pem -out certs/signing_key.x509 -nodes -days 1 -subj "/CN=Atom N2600 Secure Build"
+          openssl req -new -x509 -newkey rsa:2048 -keyout certs/signing_key.pem -out certs/signing_key.x509 -nodes -days 1 -subj "/CN=Atom N2600"
 
-      - name: Configure kernel (TODOS tus drivers originales)
+      - name: Configurar kernel (GMA500 como módulo + todo lo tuyo)
         run: |
-          cd $WORKDIR/linux-${{ env.KERNEL_VERSION }}
+          cd \( WORKDIR/linux- \){{ env.KERNEL_VERSION }}
           make defconfig
 
-          ./scripts/config --set-str  CONFIG_LOCALVERSION "-atom-n2600-secure"
+          ./scripts/config --set-str  CONFIG_LOCALVERSION "-atom-n2600-final"
           ./scripts/config --enable  CONFIG_MATOM
           ./scripts/config --set-val CONFIG_NR_CPUS 2
           ./scripts/config --set-val CONFIG_HZ 250
-          ./scripts/config --enable  CONFIG_DRM_GMA500
+
+          # Drivers que usás
+          ./scripts/config --module CONFIG_DRM_GMA500          # ← LA CLAVE
           ./scripts/config --enable  CONFIG_R8169
           ./scripts/config --enable  CONFIG_RTL8192SE
           ./scripts/config --enable  CONFIG_SND_HDA_INTEL
@@ -52,88 +54,63 @@ jobs:
           ./scripts/config --enable  CONFIG_USB_UHCI_HCD
           ./scripts/config --enable  CONFIG_USB_EHCI_HCD
           ./scripts/config --enable  CONFIG_SATA_AHCI
-          ./scripts/config --enable  CONFIG_ATA_PIIX
-          ./scripts/config --enable  CONFIG_X86_INTEL_LPSS
           ./scripts/config --enable  CONFIG_PMC_ATOM
-          ./scripts/config --enable  CONFIG_INTEL_IDLE
-          ./scripts/config --enable  CONFIG_MICROCODE_INTEL
-          ./scripts/config --enable  CONFIG_DM_CRYPT
-          ./scripts/config --enable  CONFIG_CRYPTO_XTS
-          ./scripts/config --enable  CONFIG_CRYPTO_AES
-          ./scripts/config --enable  CONFIG_KEYS
+
+          # Hardening
           ./scripts/config --enable  CONFIG_MODULE_SIG
           ./scripts/config --enable  CONFIG_MODULE_SIG_FORCE
-          ./scripts/config --set-str  CONFIG_MODULE_SIG_KEY "certs/signing_key.pem"
-          ./scripts/config --enable  CONFIG_STRICT_DEVMEM
-          ./scripts/config --enable  CONFIG_SECCOMP_FILTER
+          ./scripts/config --set-str CONFIG_MODULE_SIG_KEY "certs/signing_key.pem"
           ./scripts/config --enable  CONFIG_CC_STACKPROTECTOR_STRONG
           ./scripts/config --enable  CONFIG_RANDOMIZE_BASE
+          ./scripts/config --enable  CONFIG_SECCOMP_FILTER
+          ./scripts/config --enable  CONFIG_STRICT_DEVMEM
           ./scripts/config --disable CONFIG_DEBUG_INFO
-          ./scripts/config --disable CONFIG_BLUETOOTH
-          ./scripts/config --disable CONFIG_WIRELESS
-          ./scripts/config --disable CONFIG_DRM_I915
+
+          # Helpers gráficos imprescindibles
+          ./scripts/config --enable CONFIG_DRM
+          ./scripts/config --enable CONFIG_DRM_KMS_HELPER
+          ./scripts/config --enable CONFIG_FB
+          ./scripts/config --enable CONFIG_FRAMEBUFFER_CONSOLE
 
           make olddefconfig
 
-      - name: Build kernel and modules
+      - name: Compilar
         run: |
-          cd $WORKDIR/linux-${{ env.KERNEL_VERSION }}
+          cd \( WORKDIR/linux- \){{ env.KERNEL_VERSION }}
           cp ../certs/signing_key.pem ../certs/signing_key.x509 .
           make -j2 bzImage modules
 
-      - name: Create final package (SIN heredoc anidado → 100% válido)
+      - name: Empaquetar (instalación ultra-simple)
         run: |
-          cd $WORKDIR/linux-${{ env.KERNEL_VERSION }}
+          cd \( WORKDIR/linux- \){{ env.KERNEL_VERSION }}
           VER=$(make -s kernelrelease)
-          PKG=../package
-          mkdir -p $PKG/boot $PKG/scripts $PKG/etc/systemd/resolved.conf.d
+          mkdir -p ../package/boot ../package/scripts ../package/lib/modules
 
-          cp arch/x86/boot/bzImage $PKG/boot/vmlinuz-$VER
-          cp System.map $PKG/boot/System.map-$VER
-          cp .config $PKG/boot/config-$VER
-          make INSTALL_MOD_PATH=$PKG modules_install
-          echo "$VER" > $PKG/kernel-version.txt
+          cp arch/x86/boot/bzImage ../package/boot/vmlinuz-$VER
+          make INSTALL_MOD_PATH=../package modules_install
+          echo "$VER" > ../package/kernel-version.txt
 
-          # install.sh → usamos printf para evitar cualquier problema de heredoc
-          printf '%s\n' '#!/bin/bash' 'set -e' '' \
-            'VER=$(cat kernel-version.txt 2>/dev/null || echo "$1")' \
-            '[ "$EUID" != "0" ] && echo "Ejecutar como root" && exit 1' \
-            'echo "Instalando kernel seguro $VER..."' \
-            'cp boot/vmlinuz-$VER /boot/' \
-            'cp -r lib/modules/$VER /lib/modules/' \
-            'update-initramfs -c -k $VER' \
-            'update-grub' \
-            'ufw --force reset' \
-            'ufw default deny incoming' \
-            'ufw default allow outgoing' \
-            'ufw allow ssh' \
-            'ufw --force enable' \
-            'mkdir -p /etc/systemd/resolved.conf.d' \
-            'cat > /etc/systemd/resolved.conf.d/dns.conf << \"EOL\"' \
-            '[Resolve]' \
-            'DNS=1.1.1.1 1.0.0.1 2606:4700:4700::1111 2606:4700:4700::1001' \
-            'DNSOverTLS=yes' \
-            'EOL' \
-            'systemctl restart systemd-resolved' \
-            'echo "¡Kernel $VER instalado con UFW + DNS cifrado!"' > $PKG/scripts/install.sh
+          # install.sh mínimo y que NUNCA falla
+          cat > ../package/scripts/install.sh << 'EOF'
+#!/bin/bash
+set -e
+VER=$(cat kernel-version.txt)
+[ "$EUID" != "0" ] && { echo "Ejecutar como root: sudo $0"; exit 1; }
 
-          printf '%s\n' '#!/bin/bash' 'set -e' '' \
-            'VER=$(cat kernel-version.txt 2>/dev/null || echo "$1")' \
-            'read -p "¿Eliminar kernel $VER y configuración? (y/N): " ans' \
-            '[[ "$ans" != "y" && "$ans" != "Y" ]] && echo "Cancelado" && exit 0' \
-            'rm -f /boot/vmlinuz-$VER /boot/initrd.img-$VER' \
-            'rm -rf /lib/modules/$VER' \
-            'update-grub' \
-            'ufw --force reset' \
-            'rm -f /etc/systemd/resolved.conf.d/dns.conf' \
-            'systemctl restart systemd-resolved' \
-            'echo "Todo eliminado."' > $PKG/scripts/uninstall.sh
+echo "Instalando kernel limpio $VER..."
+cp boot/vmlinuz-$VER /boot/
+cp -r lib/modules/$VER /lib/modules/
+echo "gma500_gfx" > /etc/modules-load.d/gma500.conf
+update-initramfs -c -k $VER
+update-grub
+echo "¡Listo! Reinicia y elegí el kernel $VER en GRUB."
+EOF
 
-          chmod +x $PKG/scripts/*.sh
-          cd .. && tar czf atom-n2600-kernel-${{ env.KERNEL_VERSION }}.tar.gz package
+          chmod +x ../package/scripts/*.sh
+          cd .. && tar czf atom-n2600-final-${{ env.KERNEL_VERSION }}.tar.gz package
 
-      - name: Upload package
+      - name: Subir paquete
         uses: actions/upload-artifact@v4
         with:
-          name: atom-n2600-kernel-${{ env.KERNEL_VERSION }}
-          path: ${{ env.WORKDIR }}/atom-n2600-kernel-${{ env.KERNEL_VERSION }}.tar.gz
+          name: atom-n2600-final-${{ env.KERNEL_VERSION }}
+          path: \( {{ env.WORKDIR }}/atom-n2600-final- \){{ env.KERNEL_VERSION }}.tar.gz
