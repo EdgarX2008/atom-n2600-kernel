@@ -1,4 +1,4 @@
-name: Atom N2600 - Kernel Final Limpio y Perfecto
+name: Atom N2600 - Kernel Final con LUKS/Cryptsetup
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
           sudo apt update && sudo apt install -y \
             build-essential bc bison flex libncurses-dev \
             libssl-dev libelf-dev dwarves openssl xz-utils \
-            cpio wget git kmod
+            cpio wget git kmod cryptsetup
 
       - name: Descargar kernel
         run: |
@@ -42,16 +42,17 @@ jobs:
             -out certs/signing_key.x509 \
             -nodes -days 1 -subj "/CN=Atom N2600"
 
-      - name: Configurar kernel para Atom N2600
+      - name: Configurar kernel para Atom N2600 + LUKS
         run: |
           cd ${{ env.WORKDIR }}/linux-${{ env.KERNEL_VERSION }}
           make defconfig
           
-          ./scripts/config --set-str CONFIG_LOCALVERSION "-atom-n2600-final"
+          ./scripts/config --set-str CONFIG_LOCALVERSION "-atom-n2600-luks"
           ./scripts/config --enable CONFIG_MATOM
           ./scripts/config --set-val CONFIG_NR_CPUS 2
           ./scripts/config --set-val CONFIG_HZ 250
           
+          # Gráficos GMA500
           ./scripts/config --module CONFIG_DRM_GMA500
           ./scripts/config --enable CONFIG_DRM
           ./scripts/config --enable CONFIG_DRM_KMS_HELPER
@@ -60,19 +61,77 @@ jobs:
           ./scripts/config --enable CONFIG_BACKLIGHT_CLASS_DEVICE
           ./scripts/config --enable CONFIG_BACKLIGHT_LCD_SUPPORT
           
+          # Red y Audio
           ./scripts/config --enable CONFIG_R8169
           ./scripts/config --module CONFIG_RTL8192SE
           ./scripts/config --enable CONFIG_SND_HDA_INTEL
           ./scripts/config --enable CONFIG_SND_HDA_CODEC_REALTEK
           
+          # USB y SATA
           ./scripts/config --enable CONFIG_USB_UHCI_HCD
           ./scripts/config --enable CONFIG_USB_EHCI_HCD
           ./scripts/config --enable CONFIG_SATA_AHCI
           
+          # Plataforma Atom
           ./scripts/config --enable CONFIG_PMC_ATOM
           ./scripts/config --enable CONFIG_X86_PLATFORM_DEVICES
           ./scripts/config --enable CONFIG_ACPI
           
+          # ===== SOPORTE COMPLETO PARA LUKS/CRYPTSETUP =====
+          
+          # Device Mapper (base para LUKS)
+          ./scripts/config --enable CONFIG_BLK_DEV_DM
+          ./scripts/config --enable CONFIG_DM_CRYPT
+          ./scripts/config --enable CONFIG_DM_INTEGRITY
+          
+          # Algoritmos de encriptación para LUKS1 y LUKS2
+          ./scripts/config --enable CONFIG_CRYPTO_AES
+          ./scripts/config --enable CONFIG_CRYPTO_AES_X86_64
+          ./scripts/config --enable CONFIG_CRYPTO_XTS
+          ./scripts/config --enable CONFIG_CRYPTO_CBC
+          ./scripts/config --enable CONFIG_CRYPTO_ECB
+          ./scripts/config --enable CONFIG_CRYPTO_LRW
+          ./scripts/config --enable CONFIG_CRYPTO_PCBC
+          
+          # Algoritmos de hash para LUKS
+          ./scripts/config --enable CONFIG_CRYPTO_SHA256
+          ./scripts/config --enable CONFIG_CRYPTO_SHA512
+          ./scripts/config --enable CONFIG_CRYPTO_SHA1
+          ./scripts/config --enable CONFIG_CRYPTO_HMAC
+          ./scripts/config --enable CONFIG_CRYPTO_PBKDF2
+          
+          # Modos de encriptación avanzados (LUKS2)
+          ./scripts/config --enable CONFIG_CRYPTO_ESSIV
+          ./scripts/config --enable CONFIG_CRYPTO_AUTHENC
+          ./scripts/config --enable CONFIG_CRYPTO_GCM
+          ./scripts/config --enable CONFIG_CRYPTO_CTR
+          
+          # Serpent, Twofish (algoritmos opcionales LUKS)
+          ./scripts/config --enable CONFIG_CRYPTO_SERPENT
+          ./scripts/config --enable CONFIG_CRYPTO_TWOFISH
+          ./scripts/config --enable CONFIG_CRYPTO_TWOFISH_X86_64
+          
+          # Más algoritmos comunes
+          ./scripts/config --enable CONFIG_CRYPTO_BLOWFISH
+          ./scripts/config --enable CONFIG_CRYPTO_CAST5
+          ./scripts/config --enable CONFIG_CRYPTO_CAST6
+          
+          # Random Number Generator (importante para cryptsetup)
+          ./scripts/config --enable CONFIG_CRYPTO_USER_API_HASH
+          ./scripts/config --enable CONFIG_CRYPTO_USER_API_SKCIPHER
+          ./scripts/config --enable CONFIG_HW_RANDOM
+          
+          # Soporte para initramfs con LUKS
+          ./scripts/config --enable CONFIG_BLK_DEV_INITRD
+          ./scripts/config --enable CONFIG_RD_GZIP
+          ./scripts/config --enable CONFIG_RD_BZIP2
+          ./scripts/config --enable CONFIG_RD_LZMA
+          ./scripts/config --enable CONFIG_RD_XZ
+          ./scripts/config --enable CONFIG_RD_LZ4
+          
+          # ===== FIN SOPORTE LUKS =====
+          
+          # Seguridad
           ./scripts/config --enable CONFIG_MODULE_SIG
           ./scripts/config --enable CONFIG_MODULE_SIG_FORCE
           ./scripts/config --set-str CONFIG_MODULE_SIG_KEY "certs/signing_key.pem"
@@ -81,6 +140,7 @@ jobs:
           ./scripts/config --enable CONFIG_SECCOMP_FILTER
           ./scripts/config --enable CONFIG_STRICT_DEVMEM
           
+          # Desactivar debug
           ./scripts/config --disable CONFIG_DEBUG_INFO
           ./scripts/config --disable CONFIG_X86_DECODER_SELFTEST
           
@@ -112,7 +172,7 @@ jobs:
           [ -z "$VER" ] && { echo "Error: No se encontró kernel-version.txt"; exit 1; }
           [ "$EUID" -ne 0 ] && { echo "Ejecutar como root: sudo $0"; exit 1; }
           
-          echo "=== Instalando kernel Atom N2600 $VER ==="
+          echo "=== Instalando kernel Atom N2600 con soporte LUKS $VER ==="
           
           cp boot/vmlinuz-$VER /boot/
           [ -f boot/System.map-$VER ] && cp boot/System.map-$VER /boot/
@@ -123,26 +183,33 @@ jobs:
           mkdir -p /etc/modules-load.d
           echo "gma500_gfx" > /etc/modules-load.d/gma500.conf
           
-          echo "Generando initramfs..."
+          echo "Generando initramfs con soporte LUKS..."
           update-initramfs -c -k $VER
           
           echo "Actualizando GRUB..."
           update-grub
           
           echo ""
-          echo "Instalacion completada"
+          echo "✓ Instalacion completada"
+          echo "✓ Soporte LUKS/cryptsetup habilitado"
+          echo ""
           echo "Reinicia y selecciona Ubuntu con Linux $VER en GRUB"
           echo "El driver gma500_gfx se cargara automaticamente"
+          echo ""
+          echo "Para verificar soporte LUKS despues del reinicio:"
+          echo "  cryptsetup --version"
+          echo "  lsmod | grep dm_crypt"
           echo ""
           INSTALL_EOF
           
           chmod +x ../package/scripts/install.sh
           
           cat > ../package/README.md << README_EOF
-          # Kernel Linux para Atom N2600
+          # Kernel Linux para Atom N2600 con LUKS/Cryptsetup
           
           **Version**: $KERNEL_RELEASE
           **Optimizado para**: Intel Atom N2600 con GMA500
+          **Soporte de encriptación**: LUKS1/LUKS2 completo
           
           ## Instalacion:
           
@@ -158,10 +225,40 @@ jobs:
           - USB UHCI/EHCI
           - SATA AHCI
           
+          ## Soporte de encriptación LUKS:
+          - Device Mapper (dm-crypt)
+          - LUKS1 y LUKS2
+          - Algoritmos: AES, XTS, CBC, Serpent, Twofish
+          - Hash: SHA256, SHA512, SHA1
+          - Soporte completo para cryptsetup
+          - Compatible con discos encriptados en boot
+          
+          ## Uso de LUKS:
+          
+          ### Encriptar una partición:
+          \`\`\`bash
+          sudo cryptsetup luksFormat /dev/sdX
+          sudo cryptsetup luksOpen /dev/sdX mi_disco
+          sudo mkfs.ext4 /dev/mapper/mi_disco
+          \`\`\`
+          
+          ### Montar partición encriptada:
+          \`\`\`bash
+          sudo cryptsetup luksOpen /dev/sdX mi_disco
+          sudo mount /dev/mapper/mi_disco /mnt
+          \`\`\`
+          
+          ### Desmontar:
+          \`\`\`bash
+          sudo umount /mnt
+          sudo cryptsetup luksClose mi_disco
+          \`\`\`
+          
           ## Notas importantes:
           - El driver GMA500 esta compilado como MODULO (no built-in)
           - Se carga automaticamente en el boot
-          - Esto previene conflictos de resolucion de pantalla
+          - El initramfs incluye los modulos dm-crypt necesarios
+          - Compatible con root filesystem encriptado
           
           ## Seguridad:
           - Modulos firmados digitalmente
@@ -169,12 +266,25 @@ jobs:
           - ASLR habilitado
           - Seccomp filter
           - Memoria estricta
+          - Soporte completo para encriptación de disco
+          
+          ## Verificar soporte LUKS:
+          \`\`\`bash
+          # Ver módulos cargados
+          lsmod | grep dm_crypt
+          
+          # Verificar cryptsetup
+          cryptsetup --version
+          
+          # Ver algoritmos disponibles
+          cat /proc/crypto
+          \`\`\`
           README_EOF
           
-          cd .. && tar czf atom-n2600-final-${{ env.KERNEL_VERSION }}.tar.gz package
+          cd .. && tar czf atom-n2600-luks-${{ env.KERNEL_VERSION }}.tar.gz package
 
       - name: Subir artefacto
         uses: actions/upload-artifact@v4
         with:
-          name: atom-n2600-kernel-${{ env.KERNEL_VERSION }}
-          path: ${{ env.WORKDIR }}/atom-n2600-final-${{ env.KERNEL_VERSION }}.tar.gz
+          name: atom-n2600-kernel-luks-${{ env.KERNEL_VERSION }}
+          path: ${{ env.WORKDIR }}/atom-n2600-luks-${{ env.KERNEL_VERSION }}.tar.gz
