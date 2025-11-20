@@ -1,4 +1,4 @@
-name: Atom N2600 - Kernel QUE COMPILA 100%
+name: Atom N2600 - Kernel Final Limpio y Perfecto
 
 on:
   workflow_dispatch:
@@ -8,6 +8,10 @@ on:
         required: true
         default: '6.1.113'
 
+env:
+  KERNEL_VERSION: ${{ github.event.inputs.kernel_version }}
+  WORKDIR: ${{ github.workspace }}/kernel-build
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,72 +20,161 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Instalar todo lo necesario
+      - name: Instalar dependencias
         run: |
-          sudo apt update
-          sudo apt install -y build-essential bc bison flex libncurses-dev libssl-dev libelf-dev dwarves openssl xz-utils cpio wget
+          sudo apt update && sudo apt install -y \
+            build-essential bc bison flex libncurses-dev \
+            libssl-dev libelf-dev dwarves openssl xz-utils \
+            cpio wget git kmod
 
       - name: Descargar kernel
         run: |
-          wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${{ inputs.kernel_version }}.tar.xz
-          tar xf linux-${{ inputs.kernel_version }}.tar.xz
-          mv linux-${{ inputs.kernel_version }} kernel-src
+          mkdir -p ${{ env.WORKDIR }} && cd ${{ env.WORKDIR }}
+          wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${{ env.KERNEL_VERSION }}.tar.xz
+          tar xf linux-${{ env.KERNEL_VERSION }}.tar.xz
 
-      - name: Clave de firma
+      - name: Generar clave de firma efímera
         run: |
-          mkdir -p kernel-src/certs
-          openssl req -new -x509 -newkey rsa:2048 -keyout kernel-src/certs/signing_key.pem -outform DER -out kernel-src/certs/signing_key.x509 -nodes -days 30 -subj "/CN=Atom N2600"
+          cd ${{ env.WORKDIR }}
+          mkdir -p certs
+          openssl req -new -x509 -newkey rsa:2048 \
+            -keyout certs/signing_key.pem \
+            -out certs/signing_key.x509 \
+            -nodes -days 1 -subj "/CN=Atom N2600"
 
-      - name: Configurar kernel
+      - name: Configurar kernel para Atom N2600
         run: |
-          cd kernel-src
+          cd ${{ env.WORKDIR }}/linux-${{ env.KERNEL_VERSION }}
           make defconfig
-          ./scripts/config --set-str  CONFIG_LOCALVERSION "-atom-n2600"
-          ./scripts/config --module CONFIG_DRM_GMA500
-          ./scripts/config --enable  CONFIG_MATOM CONFIG_PMC_ATOM
+          
+          ./scripts/config --set-str CONFIG_LOCALVERSION "-atom-n2600-final"
+          ./scripts/config --enable CONFIG_MATOM
           ./scripts/config --set-val CONFIG_NR_CPUS 2
-          ./scripts/config --enable  CONFIG_R8169 CONFIG_RTL8192SE CONFIG_SND_HDA_INTEL
-          ./scripts/config --enable  CONFIG_DRM CONFIG_DRM_KMS_HELPER CONFIG_FB CONFIG_FRAMEBUFFER_CONSOLE
-          ./scripts/config --enable  CONFIG_BACKLIGHT_CLASS_DEVICE CONFIG_BACKLIGHT_LCD_SUPPORT
-          ./scripts/config --enable  CONFIG_MODULE_SIG CONFIG_MODULE_SIG_FORCE
-          ./scripts/config --set-str  CONFIG_MODULE_SIG_KEY "certs/signing_key.pem"
-          ./scripts/config --set-str  CONFIG_SYSTEM_TRUSTED_KEYS ""
-          ./scripts/config --set-str  CONFIG_SYSTEM_REVOCATION_KEYS ""
+          ./scripts/config --set-val CONFIG_HZ 250
+          
+          ./scripts/config --module CONFIG_DRM_GMA500
+          ./scripts/config --enable CONFIG_DRM
+          ./scripts/config --enable CONFIG_DRM_KMS_HELPER
+          ./scripts/config --enable CONFIG_FB
+          ./scripts/config --enable CONFIG_FRAMEBUFFER_CONSOLE
+          ./scripts/config --enable CONFIG_BACKLIGHT_CLASS_DEVICE
+          ./scripts/config --enable CONFIG_BACKLIGHT_LCD_SUPPORT
+          
+          ./scripts/config --enable CONFIG_R8169
+          ./scripts/config --module CONFIG_RTL8192SE
+          ./scripts/config --enable CONFIG_SND_HDA_INTEL
+          ./scripts/config --enable CONFIG_SND_HDA_CODEC_REALTEK
+          
+          ./scripts/config --enable CONFIG_USB_UHCI_HCD
+          ./scripts/config --enable CONFIG_USB_EHCI_HCD
+          ./scripts/config --enable CONFIG_SATA_AHCI
+          
+          ./scripts/config --enable CONFIG_PMC_ATOM
+          ./scripts/config --enable CONFIG_X86_PLATFORM_DEVICES
+          ./scripts/config --enable CONFIG_ACPI
+          
+          ./scripts/config --enable CONFIG_MODULE_SIG
+          ./scripts/config --enable CONFIG_MODULE_SIG_FORCE
+          ./scripts/config --set-str CONFIG_MODULE_SIG_KEY "certs/signing_key.pem"
+          ./scripts/config --enable CONFIG_CC_STACKPROTECTOR_STRONG
+          ./scripts/config --enable CONFIG_RANDOMIZE_BASE
+          ./scripts/config --enable CONFIG_SECCOMP_FILTER
+          ./scripts/config --enable CONFIG_STRICT_DEVMEM
+          
           ./scripts/config --disable CONFIG_DEBUG_INFO
+          ./scripts/config --disable CONFIG_X86_DECODER_SELFTEST
+          
           make olddefconfig
 
-      - name: Compilar (solo 2 cores = más rápido y nunca falla)
+      - name: Compilar kernel y módulos
         run: |
-          cd kernel-src
+          cd ${{ env.WORKDIR }}/linux-${{ env.KERNEL_VERSION }}
+          cp ../certs/signing_key.pem ../certs/signing_key.x509 .
           make -j2 bzImage modules
 
-      - name: Empaquetar (printf = infalible)
+      - name: Empaquetar kernel
         run: |
-          cd kernel-src
-          VER=$(make -s kernelrelease)
-          mkdir -p package/boot package/scripts
-          cp arch/x86/boot/bzImage package/boot/vmlinuz-$VER
-          make INSTALL_MOD_PATH=package modules_install
-          echo "$VER" > package/kernel-version.txt
-
-          printf '%b\n' \
-            '#!/bin/bash' \
-            'set -e' \
-            'VER=\( (cat " \)(dirname "$0")/../kernel-version.txt")' \
-            '[ "$EUID" != "0" ] && { echo "Ejecutar como root"; exit 1; }' \
-            'cp "$(dirname "$0")/../boot/vmlinuz-$VER" /boot/' \
-            'cp -r "$(dirname "$0")/../lib/modules/$VER" /lib/modules/' \
-            'echo "gma500_gfx" | tee /etc/modules-load.d/gma500.conf' \
-            'update-initramfs -c -k "$VER"' \
-            'update-grub' \
-            'echo "Listo! Reinicia y elige $VER"' \
-            > package/scripts/install.sh
-
-          chmod +x package/scripts/install.sh
-          tar czf ../atom-n2600-${{ inputs.kernel_version }}.tar.gz package
+          cd ${{ env.WORKDIR }}/linux-${{ env.KERNEL_VERSION }}
+          KERNEL_RELEASE=$(make -s kernelrelease)
+          mkdir -p ../package/boot ../package/scripts ../package/lib/modules
+          
+          cp arch/x86/boot/bzImage ../package/boot/vmlinuz-$KERNEL_RELEASE
+          cp System.map ../package/boot/System.map-$KERNEL_RELEASE
+          cp .config ../package/boot/config-$KERNEL_RELEASE
+          make INSTALL_MOD_PATH=../package modules_install
+          echo "$KERNEL_RELEASE" > ../package/kernel-version.txt
+          
+          cat > ../package/scripts/install.sh << 'INSTALL_EOF'
+          #!/bin/bash
+          set -e
+          
+          VER=$(cat kernel-version.txt 2>/dev/null)
+          [ -z "$VER" ] && { echo "Error: No se encontró kernel-version.txt"; exit 1; }
+          [ "$EUID" -ne 0 ] && { echo "Ejecutar como root: sudo $0"; exit 1; }
+          
+          echo "=== Instalando kernel Atom N2600 $VER ==="
+          
+          cp boot/vmlinuz-$VER /boot/
+          [ -f boot/System.map-$VER ] && cp boot/System.map-$VER /boot/
+          [ -f boot/config-$VER ] && cp boot/config-$VER /boot/
+          
+          cp -r lib/modules/$VER /lib/modules/
+          
+          mkdir -p /etc/modules-load.d
+          echo "gma500_gfx" > /etc/modules-load.d/gma500.conf
+          
+          echo "Generando initramfs..."
+          update-initramfs -c -k $VER
+          
+          echo "Actualizando GRUB..."
+          update-grub
+          
+          echo ""
+          echo "Instalacion completada"
+          echo "Reinicia y selecciona Ubuntu con Linux $VER en GRUB"
+          echo "El driver gma500_gfx se cargara automaticamente"
+          echo ""
+          INSTALL_EOF
+          
+          chmod +x ../package/scripts/install.sh
+          
+          cat > ../package/README.md << README_EOF
+          # Kernel Linux para Atom N2600
+          
+          **Version**: $KERNEL_RELEASE
+          **Optimizado para**: Intel Atom N2600 con GMA500
+          
+          ## Instalacion:
+          
+          1. Extraer el archivo tar.gz
+          2. Ejecutar: sudo ./scripts/install.sh
+          3. Reiniciar y seleccionar el nuevo kernel en GRUB
+          
+          ## Drivers incluidos:
+          - GMA500 graphics (modulo gma500_gfx)
+          - Realtek R8169 Ethernet
+          - Realtek RTL8192SE WiFi
+          - HD Audio
+          - USB UHCI/EHCI
+          - SATA AHCI
+          
+          ## Notas importantes:
+          - El driver GMA500 esta compilado como MODULO (no built-in)
+          - Se carga automaticamente en el boot
+          - Esto previene conflictos de resolucion de pantalla
+          
+          ## Seguridad:
+          - Modulos firmados digitalmente
+          - Stack protector strong
+          - ASLR habilitado
+          - Seccomp filter
+          - Memoria estricta
+          README_EOF
+          
+          cd .. && tar czf atom-n2600-final-${{ env.KERNEL_VERSION }}.tar.gz package
 
       - name: Subir artefacto
         uses: actions/upload-artifact@v4
         with:
-          name: atom-n2600-kernel-${{ inputs.kernel_version }}
-          path: atom-n2600-${{ inputs.kernel_version }}.tar.gz
+          name: atom-n2600-kernel-${{ env.KERNEL_VERSION }}
+          path: ${{ env.WORKDIR }}/atom-n2600-final-${{ env.KERNEL_VERSION }}.tar.gz
